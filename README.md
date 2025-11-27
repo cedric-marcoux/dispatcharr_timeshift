@@ -2,9 +2,17 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.0.0
+**Version**: 1.0.1
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
+
+## Changelog
+
+### v1.0.1
+- **User-Agent fix**: Now uses the User-Agent configured in M3U account settings (TiviMate, VLC, etc.) instead of a hardcoded value
+
+### v1.0.0
+- Initial release
 
 > **IMPORTANT**: After enabling or disabling this plugin, you must **refresh your source** in your IPTV player (e.g., iPlayTV) for it to detect the timeshift/replay availability on channels.
 
