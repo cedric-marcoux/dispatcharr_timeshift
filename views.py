@@ -56,7 +56,8 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     # See module docstring for explanation of iPlayTV's URL format
     provider_stream_id = duration.rstrip('.ts')
 
-    logger.info(f"[Timeshift] Request: provider_stream_id={provider_stream_id}, timestamp={timestamp}")
+    logger.info(f"[Timeshift] Request: user={username}, provider_stream_id={provider_stream_id}, "
+                f"timestamp={timestamp}, url_stream_id={stream_id}")
 
     # Step 1: Authenticate user via xc_password
     user = _authenticate_user(username, password)
@@ -126,13 +127,16 @@ def _authenticate_user(username, password):
     try:
         user = User.objects.get(username=username)
         xc_password = (user.custom_properties or {}).get('xc_password')
-        if xc_password and xc_password == password:
-            return user
+        if not xc_password:
+            logger.warning(f"[Timeshift] Auth failed: user '{username}' has no xc_password configured")
+            return None
+        if xc_password != password:
+            logger.warning(f"[Timeshift] Auth failed: wrong password for user '{username}'")
+            return None
+        return user
     except User.DoesNotExist:
-        pass
-
-    logger.warning(f"[Timeshift] Authentication failed for user: {username}")
-    return None
+        logger.warning(f"[Timeshift] Auth failed: user '{username}' does not exist")
+        return None
 
 
 def _find_channel_by_provider_stream_id(provider_stream_id):
@@ -148,6 +152,8 @@ def _find_channel_by_provider_stream_id(provider_stream_id):
     """
     from apps.channels.models import Stream
 
+    logger.debug(f"[Timeshift] Searching for provider_stream_id={provider_stream_id} in XC streams")
+
     # Search for stream where custom_properties.stream_id matches
     # Only look at XC provider streams
     stream = Stream.objects.filter(
@@ -158,9 +164,15 @@ def _find_channel_by_provider_stream_id(provider_stream_id):
     if stream:
         channel = stream.channels.first()
         if channel:
+            logger.debug(f"[Timeshift] Found channel '{channel.name}' for provider_stream_id={provider_stream_id}")
             return channel, stream
+        else:
+            logger.error(f"[Timeshift] Stream found but no channel associated for provider_stream_id={provider_stream_id}")
+    else:
+        logger.error(f"[Timeshift] Channel not found: provider_stream_id={provider_stream_id}. "
+                    f"Check: Is stream synced? Is M3U account type 'XC'? "
+                    f"Does stream.custom_properties.stream_id exist?")
 
-    logger.error(f"[Timeshift] Channel not found for provider_stream_id={provider_stream_id}")
     return None, None
 
 
@@ -179,6 +191,10 @@ def _proxy_stream(request, url, user_agent):
     Returns:
         StreamingHttpResponse with video content (status 200 or 206)
     """
+    # Log URL without credentials for security
+    url_base = url.split('?')[0]
+    logger.info(f"[Timeshift] Proxying to provider: {url_base}")
+
     headers = {
         'User-Agent': user_agent
     }
@@ -188,13 +204,21 @@ def _proxy_stream(request, url, user_agent):
     range_header = request.META.get('HTTP_RANGE')
     if range_header:
         headers['Range'] = range_header
+        logger.debug(f"[Timeshift] Forwarding Range header: {range_header}")
 
     try:
         response = requests.get(url, headers=headers, stream=True, timeout=10)
 
         # 200 = full content, 206 = partial content (Range request)
         if response.status_code not in (200, 206):
-            logger.error(f"[Timeshift] Provider returned {response.status_code}")
+            # Try to get response body for diagnostics
+            try:
+                body_preview = response.text[:200] if response.text else 'empty'
+            except Exception:
+                body_preview = 'unreadable'
+            logger.error(f"[Timeshift] Provider error: status={response.status_code}, "
+                        f"content-type={response.headers.get('Content-Type', 'unknown')}, "
+                        f"body={body_preview}")
             return HttpResponseBadRequest(f"Provider error: {response.status_code}")
 
         def stream_generator():
@@ -215,14 +239,18 @@ def _proxy_stream(request, url, user_agent):
             if header in response.headers:
                 streaming_response[header] = response.headers[header]
 
-        logger.info("[Timeshift] Streaming started")
+        logger.info(f"[Timeshift] Streaming started (status={response.status_code}, "
+                   f"content-type={response.headers.get('Content-Type', 'unknown')})")
         return streaming_response
 
     except requests.exceptions.Timeout:
-        logger.error("[Timeshift] Provider timeout")
+        logger.error(f"[Timeshift] Provider timeout after 10s for {url_base}")
         return HttpResponseBadRequest("Provider timeout")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[Timeshift] Provider connection error for {url_base}: {e}")
+        return HttpResponseBadRequest("Provider connection error")
     except requests.exceptions.RequestException as e:
-        logger.error(f"[Timeshift] Provider error: {e}")
+        logger.error(f"[Timeshift] Provider request error for {url_base}: {e}")
         return HttpResponseBadRequest("Provider connection error")
 
 
@@ -264,8 +292,10 @@ def _convert_timestamp_to_local(timestamp, timezone_str):
 
         # Convert to target timezone
         local_time = utc_time.astimezone(ZoneInfo(timezone_str))
+        result = local_time.strftime("%Y-%m-%d:%H-%M")
 
-        return local_time.strftime("%Y-%m-%d:%H-%M")
+        logger.debug(f"[Timeshift] Timestamp: {timestamp} (UTC) -> {result} ({timezone_str})")
+        return result
     except Exception as e:
-        logger.warning(f"[Timeshift] Timestamp conversion failed: {e}, using original")
+        logger.warning(f"[Timeshift] Timestamp conversion failed for '{timestamp}': {e}")
         return timestamp

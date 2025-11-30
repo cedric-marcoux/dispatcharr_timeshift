@@ -2,11 +2,30 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.0.1
+**Version**: 1.0.3
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
 
 ## Changelog
+
+### v1.0.3
+- **Enhanced logging**: Improved error diagnostics with detailed context for troubleshooting
+  - API requests now log channel enhancement stats (e.g., "Enhanced 36/36 channels")
+  - EPG requests log channel lookups and program generation counts
+  - Authentication failures now specify the exact reason (missing xc_password, wrong password, unknown user)
+  - Provider errors include status code, content-type, and response body preview
+  - All errors include actionable diagnostic hints
+
+### v1.0.2
+*Based on fixes from [Lesthat's fork](https://github.com/Lesthat/dispatcharr_timeshift) - thanks for the contributions!*
+
+- **Multi-client support**: Added compatibility for Snappier iOS and IPTVX
+- **EPG 404 fix**: Fixed "not found" errors when clients request EPG data using provider stream IDs
+- **Data type fixes**: Corrected JSON types for strict validation (Snappier iOS compatibility)
+- **EPG timezone fix**: Programs now display at correct times (fixed +2h offset issue)
+- **XMLTV timezone**: Converted timestamps for IPTVX compatibility
+- **Language setting**: Configurable EPG language (27 European languages)
+- **Unique program IDs**: Each program now has a timestamp-based unique ID
 
 ### v1.0.1
 - **User-Agent fix**: Now uses the User-Agent configured in M3U account settings (TiviMate, VLC, etc.) instead of a hardcoded value
@@ -19,7 +38,7 @@ Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 da
 ## Features
 
 - **100% Plugin Solution** - No modification to Dispatcharr source code required
-- **iPlayTV/Apple TV Compatible** - Works with Xtream Codes protocol
+- **Multi-Client Compatible** - Works with iPlayTV, Snappier iOS, IPTVX, and other Xtream Codes clients
 - **Seek Support** - Forward/rewind via HTTP Range headers
 - **Auto-install** - Hooks install automatically on startup
 - **Hot Enable/Disable** - Enable or disable without restarting Dispatcharr
@@ -51,7 +70,7 @@ Dispatcharr doesn't natively support timeshift. Adding this feature as a plugin 
 
 ### The Solution: Monkey-Patching
 
-We use three monkey-patches to add timeshift without modifying Dispatcharr's source:
+We use five monkey-patches to add timeshift without modifying Dispatcharr's source:
 
 #### 1. Patch `xc_get_live_streams` (API Response)
 
@@ -76,7 +95,19 @@ We use three monkey-patches to add timeshift without modifying Dispatcharr's sou
 
 **Additional Challenge**: Simply patching the function in the module doesn't work because Django URL patterns keep a reference to the original function from import time. We must also update `pattern.callback` directly in `urlpatterns`.
 
-#### 3. Patch `URLResolver.resolve` (Timeshift URLs)
+#### 3. Patch `xc_get_epg` (EPG Data)
+
+**Problem**: After changing `stream_id` to provider's ID, EPG requests fail. Clients request EPG using provider's stream_id, but Dispatcharr looks up by internal ID.
+
+**Solution**: Patch `xc_get_epg` to first search by provider's `stream_id` in `custom_properties`, then fall back to internal ID lookup. Also generates custom EPG with correct data types for strict clients like Snappier iOS.
+
+#### 4. Patch `generate_epg` (XMLTV Timezone)
+
+**Problem**: IPTVX and some clients display EPG timestamps as-is without timezone conversion, causing programs to appear at wrong times.
+
+**Solution**: Patch `generate_epg` to convert XMLTV timestamps from UTC to the configured local timezone.
+
+#### 5. Patch `URLResolver.resolve` (Timeshift URLs)
 
 **Problem**: Timeshift URLs like `/timeshift/user/pass/155/2025-01-15:14-30/22371.ts` are caught by Dispatcharr's catch-all pattern before any plugin URL can match.
 
@@ -118,6 +149,7 @@ Provider: /streaming/timeshift.php?stream=22371&start=2025-01-15:14-30&duration=
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Provider Timezone | Europe/Brussels | Timezone for timestamp conversion (IANA format) |
+| EPG Language | en | Language code for EPG data (27 European languages available) |
 
 ### Timezone Setting
 
@@ -195,7 +227,7 @@ Dispatcharr's PluginManager only toggles the `enabled` flag in the database when
 dispatcharr_timeshift/
 ├── __init__.py   # Package marker
 ├── plugin.py     # Plugin metadata, settings, auto-install on startup
-├── hooks.py      # Three monkey-patches (API, live stream, URL resolver)
+├── hooks.py      # Five monkey-patches (API, live stream, EPG, XMLTV, URL resolver)
 ├── views.py      # Timeshift proxy with timezone conversion
 └── README.md     # This file
 ```
@@ -217,6 +249,14 @@ Example scenarios:
 **Important**: For timeshift to actually work when playing, the XC stream with timeshift support must be the one being played. If a non-XC stream takes priority during playback, timeshift won't function even if shown in the channel list.
 
 **Recommendation**: For channels where you want timeshift, ensure the XC stream with `tv_archive=1` is set as the **first priority** stream.
+
+### My programs show 2 hours off in Snappier/IPTVX
+
+Ensure the "Provider Timezone" setting matches your provider's timezone. Most European providers use "Europe/Brussels" or similar. If programs appear 2 hours early or late, adjust the timezone setting accordingly.
+
+### I get 404 errors when selecting a program for replay
+
+This was fixed in v1.0.2. The issue occurred because clients use provider stream IDs for EPG requests, but Dispatcharr was looking up by internal IDs. Update to v1.0.2 or later.
 
 ## Troubleshooting
 
@@ -242,15 +282,26 @@ This can happen if hooks aren't fully installed. The plugin patches both the `st
 
 ### Check logs
 
+The plugin uses structured logging with different levels for easy troubleshooting:
+
 ```bash
 # All timeshift logs
 docker compose logs dispatcharr | grep -i timeshift
 
 # Specific events
-docker compose logs dispatcharr | grep "Timeshift.*Intercepted"   # URL interception
-docker compose logs dispatcharr | grep "Timeshift.*Converted"     # Timezone conversion
-docker compose logs dispatcharr | grep "Timeshift.*Live"          # Live stream lookup
+docker compose logs dispatcharr | grep "Timeshift.*API"           # API enhancements (channel counts)
+docker compose logs dispatcharr | grep "Timeshift.*EPG"           # EPG lookups and generation
+docker compose logs dispatcharr | grep "Timeshift.*Live"          # Live stream lookups
+docker compose logs dispatcharr | grep "Timeshift.*Request"       # Incoming timeshift requests
+docker compose logs dispatcharr | grep "Timeshift.*Auth"          # Authentication issues
+docker compose logs dispatcharr | grep "Timeshift.*Provider"      # Provider communication errors
 ```
+
+**Log levels:**
+- `INFO`: Normal operations (requests received, channels enhanced, streams started)
+- `WARNING`: Non-fatal issues (auth failed, channel not found with fallback)
+- `ERROR`: Failures requiring attention (provider errors, unexpected exceptions)
+- `DEBUG`: Detailed flow (timestamp conversions, search details) - enable Django DEBUG mode to see these
 
 ## Limitations
 

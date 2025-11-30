@@ -57,7 +57,7 @@ class Plugin:
 
     def __init__(self):
         self.name = "Dispatcharr Timeshift"
-        self.version = "1.0.1"
+        self.version = "1.0.3"
         self.description = "Timeshift/catch-up TV support for Xtream Codes providers"
         self.url = "https://github.com/cedric-marcoux/dispatcharr_timeshift"
         self.author = "Cedric Marcoux"
@@ -70,6 +70,42 @@ class Plugin:
                 "label": "Provider Timezone",
                 "default": "Europe/Brussels",
                 "help_text": "Timezone for timestamp conversion (IANA format, e.g. Europe/Brussels, America/New_York)"
+            },
+            {
+                "id": "language",
+                "type": "select",
+                "label": "EPG Language",
+                "default": "en",
+                "options": [
+                    {"value": "bg", "label": "Български (Bulgarian)"},
+                    {"value": "cs", "label": "Čeština (Czech)"},
+                    {"value": "da", "label": "Dansk (Danish)"},
+                    {"value": "de", "label": "Deutsch"},
+                    {"value": "el", "label": "Ελληνικά (Greek)"},
+                    {"value": "en", "label": "English"},
+                    {"value": "es", "label": "Español"},
+                    {"value": "et", "label": "Eesti (Estonian)"},
+                    {"value": "fi", "label": "Suomi (Finnish)"},
+                    {"value": "fr", "label": "Français"},
+                    {"value": "hr", "label": "Hrvatski (Croatian)"},
+                    {"value": "hu", "label": "Magyar (Hungarian)"},
+                    {"value": "it", "label": "Italiano"},
+                    {"value": "lt", "label": "Lietuvių (Lithuanian)"},
+                    {"value": "lv", "label": "Latviešu (Latvian)"},
+                    {"value": "nl", "label": "Nederlands"},
+                    {"value": "no", "label": "Norsk (Norwegian)"},
+                    {"value": "pl", "label": "Polski (Polish)"},
+                    {"value": "pt", "label": "Português"},
+                    {"value": "ro", "label": "Română (Romanian)"},
+                    {"value": "ru", "label": "Русский (Russian)"},
+                    {"value": "sk", "label": "Slovenčina (Slovak)"},
+                    {"value": "sl", "label": "Slovenščina (Slovenian)"},
+                    {"value": "sr", "label": "Српски (Serbian)"},
+                    {"value": "sv", "label": "Svenska (Swedish)"},
+                    {"value": "tr", "label": "Türkçe (Turkish)"},
+                    {"value": "uk", "label": "Українська (Ukrainian)"},
+                ],
+                "help_text": "Language code for EPG data (ISO 639-1)"
             }
         ]
 
