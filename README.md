@@ -171,6 +171,51 @@ Provider: /streaming/timeshift.php?stream=22371&start=2025-01-15:14-30&duration=
 |---------|---------|-------------|
 | Provider Timezone | Europe/Brussels | Timezone for timestamp conversion (IANA format) |
 | EPG Language | en | Language code for EPG data (27 European languages available) |
+| Catchup URL Template | `{server.url}/streaming/timeshift.php?...` | Template for catchup requests with placeholders |
+
+### Catchup URL Template
+
+Configure how catchup requests are formatted for your provider. Available placeholders:
+
+| Placeholder | Description | Example |
+|-------------|-------------|----------|
+| `{server.url}` | Provider server URL (without trailing slash) | `http://provider.com:8080` |
+| `{XC.username}` | XC account username | `john123` |
+| `{XC.password}` | XC account password | `secret` |
+| `{stream_id}` | Provider's stream ID | `22371` |
+| `{program.starttime}` | Program start time (local timezone, format: YYYY-MM-DD:HH-MM) | `2025-01-15:14-30` |
+| `{program.duration}` | Duration in minutes (currently fixed at 120) | `120` |
+
+**Default Template** (XC native format):
+```
+{server.url}/streaming/timeshift.php?username={XC.username}&password={XC.password}&stream={stream_id}&start={program.starttime}&duration=120
+```
+
+**Example Templates** for different providers:
+
+```
+# Flussonic format
+{server.url}/{stream_id}/timeshift_abs-{program.starttime}.m3u8?token={XC.password}
+
+# Generic append format
+{server.url}/live/{XC.username}/{XC.password}/{stream_id}.ts?utc={program.starttime}&lutc={program.duration}
+
+# Custom format
+{server.url}/catchup?user={XC.username}&pass={XC.password}&id={stream_id}&start={program.starttime}
+```
+
+### Catchup Detection
+
+The plugin automatically detects catchup support from various M3U8 flags in your provider's stream properties:
+
+**Supported flags:**
+- `tv_archive=1` + `tv_archive_duration=7` (XC native)
+- `catchup-type="xc"` + `catchup-days="7"` (common M3U8 extension)
+- `catchup="append"` + `catchup-days="7"` (alternate format)
+- `catchup-source="..."` (presence indicates support)
+- `timeshift="7"` (generic flag)
+
+The plugin checks for these flags in order and uses the first one found. If `catchup-days` is not specified, it defaults to 7 days.
 
 ### Timezone Setting
 

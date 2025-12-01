@@ -58,7 +58,7 @@ class Plugin:
     def __init__(self):
         self.name = "Dispatcharr Timeshift"
         self.version = "1.0.3"
-        self.description = "Timeshift/catch-up TV support for Xtream Codes providers"
+        self.description = "Timeshift/catch-up TV support for Xtream Codes providers with flexible catchup detection"
         self.url = "https://github.com/cedric-marcoux/dispatcharr_timeshift"
         self.author = "Cedric Marcoux"
         self.author_url = "https://github.com/cedric-marcoux"
@@ -106,6 +106,13 @@ class Plugin:
                     {"value": "uk", "label": "Українська (Ukrainian)"},
                 ],
                 "help_text": "Language code for EPG data (ISO 639-1)"
+            },
+            {
+                "id": "catchup_url_template",
+                "type": "text",
+                "label": "Catchup URL Template",
+                "default": "{server.url}/streaming/timeshift.php?username={XC.username}&password={XC.password}&stream={stream_id}&start={program.starttime}&duration=120",
+                "help_text": "Template for catchup requests. Available placeholders: {server.url}, {XC.username}, {XC.password}, {stream_id}, {program.starttime}, {program.duration}"
             }
         ]
 

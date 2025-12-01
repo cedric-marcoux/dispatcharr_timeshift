@@ -75,10 +75,12 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         logger.warning(f"[Timeshift] Access denied for user {username} to channel {channel.name}")
         return HttpResponseForbidden("Access denied")
 
-    # Step 4: Verify channel supports timeshift
+    # Step 4: Verify channel supports catchup/timeshift
+    from .hooks import _has_catchup_support
     props = stream.custom_properties or {}
-    if props.get('tv_archive') not in (1, '1'):
-        return HttpResponseBadRequest("Timeshift not supported for this channel")
+    has_catchup, _ = _has_catchup_support(props)
+    if not has_catchup:
+        return HttpResponseBadRequest("Catchup/timeshift not supported for this channel")
 
     # Step 5: Verify it's an Xtream Codes provider
     m3u_account = stream.m3u_account
@@ -87,22 +89,34 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 
     # Step 6: Convert timestamp from UTC to provider's local timezone
     # iPlayTV sends timestamps in UTC, but provider expects local time
-    timezone_str = _get_plugin_timezone()
+    from .hooks import _get_plugin_config
+    plugin_config = _get_plugin_config()
+    timezone_str = plugin_config['timezone']
     local_timestamp = _convert_timestamp_to_local(timestamp, timezone_str)
     logger.info(f"[Timeshift] Converted timestamp: {timestamp} (UTC) -> {local_timestamp} ({timezone_str})")
 
-    # Step 7: Build provider's timeshift URL
-    # Format: /streaming/timeshift.php?username=X&password=Y&stream=Z&start=T&duration=M
-    timeshift_url = (
-        f"{m3u_account.server_url.rstrip('/')}/streaming/timeshift.php"
-        f"?username={m3u_account.username}"
-        f"&password={m3u_account.password}"
-        f"&stream={props.get('stream_id')}"
-        f"&start={local_timestamp}"
-        f"&duration=120"  # Request 2 hours of content
-    )
-
+    # Step 7: Build provider's catchup URL using configurable template
+    # Get the template and substitute placeholders
+    url_template = plugin_config['catchup_url_template']
+    logger.debug(f"[Timeshift] URL template from config: {url_template}")
+    
+    # Build placeholder values
+    placeholders = {
+        'server.url': m3u_account.server_url.rstrip('/'),
+        'XC.username': m3u_account.username,
+        'XC.password': m3u_account.password,
+        'stream_id': str(props.get('stream_id')),
+        'program.starttime': local_timestamp,
+        'program.duration': '120'  # Default 2 hours
+    }
+    
+    # Substitute placeholders in template
+    timeshift_url = url_template
+    for key, value in placeholders.items():
+        timeshift_url = timeshift_url.replace('{' + key + '}', value)
+    
     logger.info(f"[Timeshift] Proxying to provider for channel: {channel.name}")
+    logger.info(f"[Timeshift] Final catchup URL: {timeshift_url}")
 
     # Step 8: Get User-Agent from M3U account settings
     user_agent = m3u_account.get_user_agent().user_agent
@@ -252,23 +266,6 @@ def _proxy_stream(request, url, user_agent):
     except requests.exceptions.RequestException as e:
         logger.error(f"[Timeshift] Provider request error for {url_base}: {e}")
         return HttpResponseBadRequest("Provider connection error")
-
-
-def _get_plugin_timezone():
-    """
-    Get configured timezone from plugin settings.
-
-    Returns:
-        str: Timezone string (e.g., "Europe/Brussels"), defaults to "Europe/Brussels"
-    """
-    try:
-        from apps.plugins.models import PluginConfig
-        config = PluginConfig.objects.filter(key='dispatcharr_timeshift').first()
-        if config and config.config:
-            return config.config.get('timezone', 'Europe/Brussels')
-    except Exception as e:
-        logger.debug(f"[Timeshift] Could not load timezone setting: {e}")
-    return "Europe/Brussels"
 
 
 def _convert_timestamp_to_local(timestamp, timezone_str):

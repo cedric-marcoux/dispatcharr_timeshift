@@ -67,23 +67,39 @@ def _get_plugin_config():
     """
     Get plugin configuration from database.
 
-    Returns timezone and language settings configured in plugin UI.
+    Returns timezone, language, and catchup URL template settings configured in plugin UI.
     Used by multiple hooks to avoid duplicating config loading code.
 
     Returns:
-        dict: {'timezone': str, 'language': str}
+        dict: {'timezone': str, 'language': str, 'catchup_url_template': str}
     """
     try:
         from apps.plugins.models import PluginConfig
         config = PluginConfig.objects.filter(key='dispatcharr_timeshift').first()
-        if config and config.config:
-            return {
-                'timezone': config.config.get('timezone', 'Europe/Brussels'),
-                'language': config.config.get('language', 'en')
+        if config and config.settings:
+            result = {
+                'timezone': config.settings.get('timezone', 'Europe/Brussels').strip(),
+                'language': config.settings.get('language', 'en').strip(),
+                'catchup_url_template': config.settings.get(
+                    'catchup_url_template',
+                    '{server.url}/streaming/timeshift.php?username={XC.username}&password={XC.password}&stream={stream_id}&start={program.starttime}&duration=120'
+                ).strip()
             }
-    except Exception:
-        pass
-    return {'timezone': 'Europe/Brussels', 'language': 'en'}
+            logger.debug(f"[Timeshift] Loaded config from DB: timezone={result['timezone']}, "
+                        f"language={result['language']}, "
+                        f"template={result['catchup_url_template'][:80]}...")
+            return result
+        else:
+            logger.warning("[Timeshift] No config found in DB, using defaults")
+    except Exception as e:
+        logger.error(f"[Timeshift] Error loading config: {e}", exc_info=True)
+    
+    logger.debug("[Timeshift] Using default config")
+    return {
+        'timezone': 'Europe/Brussels',
+        'language': 'en',
+        'catchup_url_template': '{server.url}/streaming/timeshift.php?username={XC.username}&password={XC.password}&stream={stream_id}&start={program.starttime}&duration=120'
+    }
 
 
 def _is_plugin_enabled():
@@ -102,6 +118,72 @@ def _is_plugin_enabled():
         return config.enabled
     except Exception:
         return False
+
+
+def _has_catchup_support(props):
+    """
+    Check if stream has catchup/timeshift support from various M3U8 flags.
+
+    Supports multiple catchup flag variations:
+    - tv_archive=1 (XC native)
+    - catchup-type="xc", "flussonic", "shift", "fs", "append", "default"
+    - catchup="append", "flussonic", "shift", "xc"
+    - catchup-days (any value > 0)
+    - catchup-source (presence indicates support)
+    - timeshift (any value > 0)
+
+    Args:
+        props: Stream custom_properties dict
+
+    Returns:
+        tuple: (has_catchup: bool, days: int)
+    """
+    if not props:
+        return False, 0
+
+    # Check tv_archive (XC native)
+    if props.get('tv_archive') in (1, '1', True, 'true'):
+        days = int(props.get('tv_archive_duration', 0))
+        return True, days
+
+    # Check catchup-type (common M3U8 extension)
+    catchup_type = props.get('catchup-type', props.get('catchup_type', '')).lower()
+    if catchup_type in ('xc', 'flussonic', 'shift', 'fs', 'append', 'default'):
+        days = int(props.get('catchup-days', props.get('catchup_days', 7)))
+        return True, days
+
+    # Check catchup (alternate format)
+    catchup = props.get('catchup', '').lower()
+    if catchup in ('append', 'flussonic', 'shift', 'xc'):
+        days = int(props.get('catchup-days', props.get('catchup_days', 7)))
+        return True, days
+
+    # Check catchup-days (presence indicates support)
+    catchup_days = props.get('catchup-days', props.get('catchup_days'))
+    if catchup_days:
+        try:
+            days = int(catchup_days)
+            if days > 0:
+                return True, days
+        except (ValueError, TypeError):
+            pass
+
+    # Check catchup-source (presence indicates support)
+    if props.get('catchup-source') or props.get('catchup_source'):
+        days = int(props.get('catchup-days', props.get('catchup_days', 7)))
+        return True, days
+
+    # Check timeshift (generic flag)
+    timeshift = props.get('timeshift')
+    if timeshift:
+        try:
+            days = int(timeshift)
+            if days > 0:
+                return True, days
+        except (ValueError, TypeError):
+            pass
+
+    return False, 0
 
 
 def install_hooks():
@@ -185,12 +267,14 @@ def _patch_xc_get_live_streams():
 
                 props = first_stream.custom_properties or {}
 
-                # Add tv_archive values
-                tv_archive = int(props.get('tv_archive', 0))
-                stream_data['tv_archive'] = tv_archive
-                stream_data['tv_archive_duration'] = int(props.get('tv_archive_duration', 0))
+                # Check for catchup support from various flag types
+                has_catchup, catchup_days = _has_catchup_support(props)
 
-                if tv_archive:
+                # Add tv_archive values (for iPlayTV compatibility)
+                stream_data['tv_archive'] = 1 if has_catchup else 0
+                stream_data['tv_archive_duration'] = catchup_days
+
+                if has_catchup:
                     timeshift_count += 1
 
                 # Replace stream_id with provider's stream_id
@@ -447,10 +531,10 @@ def _patch_xc_get_epg():
                               f"Check: Is stream synced? Is M3U account type 'XC'?")
                 raise Http404()
 
-            # Check if channel has tv_archive enabled
+            # Check if channel has catchup/timeshift enabled
             first_stream = channel.streams.order_by('channelstream__order').first()
             props = first_stream.custom_properties or {} if first_stream else {}
-            has_tv_archive = props.get('tv_archive') in (1, '1')
+            has_tv_archive, archive_duration_days = _has_catchup_support(props)
 
             if has_tv_archive and not short:
                 # CUSTOM EPG RESPONSE: Include past programs for timeshift
@@ -465,7 +549,9 @@ def _patch_xc_get_epg():
                 language = plugin_config['language']
                 local_tz = ZoneInfo(timezone_str)
 
-                archive_duration_days = int(props.get('tv_archive_duration', 7))
+                # Use detected catchup days, or default to 7
+                if archive_duration_days == 0:
+                    archive_duration_days = 7
                 start_date = django_timezone.now() - timedelta(days=archive_duration_days)
 
                 # Get programs from the last X days until future
