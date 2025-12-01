@@ -2,7 +2,7 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.0.3
+**Version**: 1.0.4
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
 
@@ -28,6 +28,12 @@ If you don't rename the folder, the plugin **will not load** and timeshift featu
 ---
 
 ## Changelog
+
+### v1.0.4
+- **Bug fix**: Fixed `AssertionError: .accepted_renderer not set on Response` error
+  - Replaced Django REST Framework `Response` with Django `JsonResponse` in `patched_stream_xc()`
+  - This error occurred when channel lookup failed (404) or credentials were invalid (401)
+  - The issue was that DRF's Response requires a renderer, but the patched function is called from Django URL patterns, not through DRF's APIView
 
 ### v1.0.3
 - **Enhanced logging**: Improved error diagnostics with detailed context for troubleshooting

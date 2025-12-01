@@ -255,7 +255,7 @@ def _patch_stream_xc():
 
         import pathlib
         from django.shortcuts import get_object_or_404
-        from rest_framework.response import Response
+        from django.http import JsonResponse
         from apps.accounts.models import User
         from apps.channels.models import Channel, Stream
 
@@ -267,10 +267,10 @@ def _patch_stream_xc():
         custom_properties = user.custom_properties or {}
 
         if "xc_password" not in custom_properties:
-            return Response({"error": "Invalid credentials"}, status=401)
+            return JsonResponse({"error": "Invalid credentials"}, status=401)
 
         if custom_properties["xc_password"] != password:
-            return Response({"error": "Invalid credentials"}, status=401)
+            return JsonResponse({"error": "Invalid credentials"}, status=401)
 
         channel = None
 
@@ -315,11 +315,11 @@ def _patch_stream_xc():
             logger.warning(f"[Timeshift] Live: Channel not found for ID={channel_id_str}. "
                           f"Checked: provider_stream_id lookup, internal_id lookup. "
                           f"User: {username}")
-            return Response({"error": "Not found"}, status=404)
+            return JsonResponse({"error": "Not found"}, status=404)
 
         # Check user access level
         if user.user_level < channel.user_level:
-            return Response({"error": "Not found"}, status=404)
+            return JsonResponse({"error": "Not found"}, status=404)
 
         # Call the original stream_ts function
         from apps.proxy.ts_proxy.views import stream_ts
