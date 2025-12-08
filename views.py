@@ -43,7 +43,60 @@ logger = logging.getLogger("plugins.dispatcharr_timeshift.views")
 _url_format_cache = {}
 
 
-def _build_timeshift_url_format_a(m3u_account, stream_id, timestamp):
+def _get_programme_duration(channel, timestamp_str):
+    """
+    Get programme duration from EPG based on timestamp.
+
+    iPlayTV sends the start time of the programme the user wants to watch.
+    We look up that programme in EPG and calculate its actual duration.
+
+    Args:
+        channel: Channel object with epg_data relation
+        timestamp_str: Timestamp in format YYYY-MM-DD:HH-MM (provider's local time)
+
+    Returns:
+        int: Duration in minutes, or 120 as fallback
+    """
+    DEFAULT_DURATION = 120  # 2 hours fallback
+    BUFFER_MINUTES = 5      # Add buffer for stream startup
+
+    try:
+        # Parse timestamp (already converted to provider's local timezone)
+        dt = datetime.strptime(timestamp_str, "%Y-%m-%d:%H-%M")
+
+        # Check if channel has EPG data
+        if not channel.epg_data:
+            logger.debug(f"[Timeshift] No EPG data for channel '{channel.name}', using default {DEFAULT_DURATION}min")
+            return DEFAULT_DURATION
+
+        # Find programme that contains this timestamp
+        # The timestamp is the programme start time from iPlayTV
+        programme = channel.epg_data.programs.filter(
+            start_time__lte=dt,
+            end_time__gt=dt
+        ).first()
+
+        if not programme:
+            logger.debug(f"[Timeshift] No programme found at {timestamp_str} for '{channel.name}', using default {DEFAULT_DURATION}min")
+            return DEFAULT_DURATION
+
+        # Calculate duration from programme
+        duration_seconds = (programme.end_time - programme.start_time).total_seconds()
+        duration_minutes = int(duration_seconds / 60) + BUFFER_MINUTES
+
+        # Cap at reasonable maximum (8 hours) to avoid issues
+        duration_minutes = min(duration_minutes, 480)
+
+        logger.info(f"[Timeshift] Programme '{programme.title}' ({channel.name}): {duration_minutes}min (incl. {BUFFER_MINUTES}min buffer)")
+
+        return duration_minutes
+
+    except Exception as e:
+        logger.warning(f"[Timeshift] Error getting programme duration: {e}, using default {DEFAULT_DURATION}min")
+        return DEFAULT_DURATION
+
+
+def _build_timeshift_url_format_a(m3u_account, stream_id, timestamp, duration_minutes):
     """Build timeshift URL using query string format (streaming/timeshift.php)."""
     return (
         f"{m3u_account.server_url.rstrip('/')}/streaming/timeshift.php"
@@ -51,17 +104,17 @@ def _build_timeshift_url_format_a(m3u_account, stream_id, timestamp):
         f"&password={m3u_account.password}"
         f"&stream={stream_id}"
         f"&start={timestamp}"
-        f"&duration=120"
+        f"&duration={duration_minutes}"
     )
 
 
-def _build_timeshift_url_format_b(m3u_account, stream_id, timestamp):
+def _build_timeshift_url_format_b(m3u_account, stream_id, timestamp, duration_minutes):
     """Build timeshift URL using path format (/timeshift/user/pass/duration/time/id.ts)."""
     return (
         f"{m3u_account.server_url.rstrip('/')}/timeshift"
         f"/{m3u_account.username}"
         f"/{m3u_account.password}"
-        f"/120"
+        f"/{duration_minutes}"
         f"/{timestamp}"
         f"/{stream_id}.ts"
     )
@@ -120,6 +173,10 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     local_timestamp = _convert_timestamp_to_local(timestamp, timezone_str)
     logger.info(f"[Timeshift] Converted timestamp: {timestamp} (UTC) -> {local_timestamp} ({timezone_str})")
 
+    # Step 6.5: Get programme duration from EPG
+    # Duration is dynamic based on the actual programme length
+    duration_minutes = _get_programme_duration(channel, local_timestamp)
+
     # Step 7: Build provider's timeshift URL with format auto-detection
     # Some providers use Format A (query string), others use Format B (path-based)
     stream_id_value = props.get('stream_id')
@@ -129,13 +186,13 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
 
     if preferred_format == 'B':
         # Format B proven to work for this account - use directly
-        timeshift_url = _build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp)
+        timeshift_url = _build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp, duration_minutes)
         fallback_url = None
         logger.info(f"[Timeshift] Using cached Format B for account {m3u_account.id}")
     else:
         # Try Format A first, with Format B as fallback
-        timeshift_url = _build_timeshift_url_format_a(m3u_account, stream_id_value, local_timestamp)
-        fallback_url = _build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp)
+        timeshift_url = _build_timeshift_url_format_a(m3u_account, stream_id_value, local_timestamp, duration_minutes)
+        fallback_url = _build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp, duration_minutes)
 
     logger.info(f"[Timeshift] Proxying to provider for channel: {channel.name}")
 

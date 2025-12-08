@@ -2,7 +2,7 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.1.0
+**Version**: 1.1.1
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
 
@@ -41,10 +41,19 @@ If timeshift features don't appear after installation, your **provider may not s
 
 ## Changelog
 
+### v1.1.1
+- **Dynamic EPG-based duration**: Timeshift requests now use the actual programme duration from EPG
+  - Calculates duration from programme's `end_time - start_time`
+  - Adds 5-minute buffer for stream startup
+  - Falls back to 120 minutes if programme not found in EPG
+  - Caps at 8 hours maximum to prevent issues
+  - Prevents long movies from being cut off (was hardcoded to 2h)
+  - More efficient for short programmes (30-45 min)
+
 ### v1.1.0
 - **URL format fallback**: Automatic detection and fallback for providers using different timeshift URL formats
-  - Format A (default): `/streaming/timeshift.php?username=X&password=Y&stream=Z&start=T&duration=120`
-  - Format B (fallback): `/timeshift/{username}/{password}/120/{timestamp}/{stream_id}.ts`
+  - Format A (default): `/streaming/timeshift.php?username=X&password=Y&stream=Z&start=T&duration=N`
+  - Format B (fallback): `/timeshift/{username}/{password}/N/{timestamp}/{stream_id}.ts`
   - Automatically tries Format B if Format A returns HTTP 400
   - Caches working format per M3U account for session (no restart needed)
   - Fixes "Provider returned 400" error for providers using path-based timeshift URLs
@@ -190,10 +199,11 @@ timeshift_proxy()
     ├── 3. Check user access level
     ├── 4. Verify tv_archive support
     ├── 5. Convert timestamp UTC → Local timezone
-    └── 6. Proxy stream to client
+    ├── 6. Get programme duration from EPG
+    └── 7. Proxy stream to client
     │
     ▼
-Provider: /streaming/timeshift.php?stream=22371&start=2025-01-15:14-30&duration=120
+Provider: /streaming/timeshift.php?stream=22371&start=2025-01-15:14-30&duration={EPG_DURATION}
 ```
 
 ## Configuration
@@ -372,8 +382,8 @@ docker compose logs dispatcharr | grep "Timeshift.*Provider"      # Provider com
 ## Limitations
 
 1. **Worker warm-up required**: Each uWSGI worker must handle at least one request to install hooks
-2. **Fixed duration**: Proxy requests 2 hours of content from provider
-3. **XC providers only**: Only works with Xtream Codes type M3U accounts
+2. **XC providers only**: Only works with Xtream Codes type M3U accounts
+3. **EPG required for accurate duration**: Without EPG data, falls back to 120 minutes
 
 ## Development Notes
 
