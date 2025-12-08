@@ -37,6 +37,35 @@ from django.http import StreamingHttpResponse, Http404, HttpResponseBadRequest, 
 
 logger = logging.getLogger("plugins.dispatcharr_timeshift.views")
 
+# Cache for URL format preferences per m3u_account
+# Key: m3u_account.id, Value: 'A' (query string) or 'B' (path-based)
+# This is session-scoped (cleared on restart) - no persistence needed
+_url_format_cache = {}
+
+
+def _build_timeshift_url_format_a(m3u_account, stream_id, timestamp):
+    """Build timeshift URL using query string format (streaming/timeshift.php)."""
+    return (
+        f"{m3u_account.server_url.rstrip('/')}/streaming/timeshift.php"
+        f"?username={m3u_account.username}"
+        f"&password={m3u_account.password}"
+        f"&stream={stream_id}"
+        f"&start={timestamp}"
+        f"&duration=120"
+    )
+
+
+def _build_timeshift_url_format_b(m3u_account, stream_id, timestamp):
+    """Build timeshift URL using path format (/timeshift/user/pass/duration/time/id.ts)."""
+    return (
+        f"{m3u_account.server_url.rstrip('/')}/timeshift"
+        f"/{m3u_account.username}"
+        f"/{m3u_account.password}"
+        f"/120"
+        f"/{timestamp}"
+        f"/{stream_id}.ts"
+    )
+
 
 def timeshift_proxy(request, username, password, stream_id, timestamp, duration):
     """
@@ -91,24 +120,30 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
     local_timestamp = _convert_timestamp_to_local(timestamp, timezone_str)
     logger.info(f"[Timeshift] Converted timestamp: {timestamp} (UTC) -> {local_timestamp} ({timezone_str})")
 
-    # Step 7: Build provider's timeshift URL
-    # Format: /streaming/timeshift.php?username=X&password=Y&stream=Z&start=T&duration=M
-    timeshift_url = (
-        f"{m3u_account.server_url.rstrip('/')}/streaming/timeshift.php"
-        f"?username={m3u_account.username}"
-        f"&password={m3u_account.password}"
-        f"&stream={props.get('stream_id')}"
-        f"&start={local_timestamp}"
-        f"&duration=120"  # Request 2 hours of content
-    )
+    # Step 7: Build provider's timeshift URL with format auto-detection
+    # Some providers use Format A (query string), others use Format B (path-based)
+    stream_id_value = props.get('stream_id')
+
+    # Check cached format preference for this account
+    preferred_format = _url_format_cache.get(m3u_account.id, 'A')
+
+    if preferred_format == 'B':
+        # Format B proven to work for this account - use directly
+        timeshift_url = _build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp)
+        fallback_url = None
+        logger.info(f"[Timeshift] Using cached Format B for account {m3u_account.id}")
+    else:
+        # Try Format A first, with Format B as fallback
+        timeshift_url = _build_timeshift_url_format_a(m3u_account, stream_id_value, local_timestamp)
+        fallback_url = _build_timeshift_url_format_b(m3u_account, stream_id_value, local_timestamp)
 
     logger.info(f"[Timeshift] Proxying to provider for channel: {channel.name}")
 
     # Step 8: Get User-Agent from M3U account settings
     user_agent = m3u_account.get_user_agent().user_agent
 
-    # Step 9: Proxy the stream
-    return _proxy_stream(request, timeshift_url, user_agent)
+    # Step 9: Proxy the stream (with fallback support)
+    return _proxy_stream(request, timeshift_url, user_agent, fallback_url, m3u_account.id)
 
 
 def _authenticate_user(username, password):
@@ -176,17 +211,22 @@ def _find_channel_by_provider_stream_id(provider_stream_id):
     return None, None
 
 
-def _proxy_stream(request, url, user_agent):
+def _proxy_stream(request, url, user_agent, fallback_url=None, m3u_account_id=None):
     """
-    Proxy video stream from provider to client.
+    Proxy video stream from provider to client with fallback support.
 
     Supports HTTP Range requests for seek/forward/rewind functionality.
     iPlayTV sends Range headers when user seeks in the timeline.
 
+    If primary URL returns 400 and fallback_url is provided, tries the fallback.
+    On success, caches the working format for the m3u_account.
+
     Args:
         request: Django request object
-        url: Provider's timeshift URL
+        url: Provider's timeshift URL (primary)
         user_agent: User-Agent string from M3U account settings
+        fallback_url: Alternative URL format to try if primary returns 400
+        m3u_account_id: M3U account ID for caching format preference
 
     Returns:
         StreamingHttpResponse with video content (status 200 or 206)
@@ -208,6 +248,21 @@ def _proxy_stream(request, url, user_agent):
 
     try:
         response = requests.get(url, headers=headers, stream=True, timeout=10)
+
+        # If 400 error and we have a fallback URL, try the alternative format
+        if response.status_code == 400 and fallback_url:
+            logger.info(f"[Timeshift] Format A returned 400, trying Format B...")
+            response.close()
+
+            fallback_url_base = fallback_url.split('?')[0]
+            logger.info(f"[Timeshift] Proxying to provider (fallback): {fallback_url_base}")
+
+            response = requests.get(fallback_url, headers=headers, stream=True, timeout=10)
+
+            # If fallback works, cache the format preference
+            if response.status_code in (200, 206) and m3u_account_id:
+                _url_format_cache[m3u_account_id] = 'B'
+                logger.info(f"[Timeshift] Format B works for account {m3u_account_id}, caching preference")
 
         # 200 = full content, 206 = partial content (Range request)
         if response.status_code not in (200, 206):

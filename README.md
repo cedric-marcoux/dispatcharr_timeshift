@@ -2,7 +2,7 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.0.5
+**Version**: 1.1.0
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
 
@@ -40,6 +40,14 @@ If timeshift features don't appear after installation, your **provider may not s
 ---
 
 ## Changelog
+
+### v1.1.0
+- **URL format fallback**: Automatic detection and fallback for providers using different timeshift URL formats
+  - Format A (default): `/streaming/timeshift.php?username=X&password=Y&stream=Z&start=T&duration=120`
+  - Format B (fallback): `/timeshift/{username}/{password}/120/{timestamp}/{stream_id}.ts`
+  - Automatically tries Format B if Format A returns HTTP 400
+  - Caches working format per M3U account for session (no restart needed)
+  - Fixes "Provider returned 400" error for providers using path-based timeshift URLs
 
 ### v1.0.5
 - **Enhanced diagnostics**: Improved "Channel not found" logging with detailed troubleshooting info
