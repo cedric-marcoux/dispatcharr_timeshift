@@ -335,8 +335,7 @@ def _proxy_stream(request, url, user_agent, fallback_url=None, m3u_account_id=No
 
         def stream_generator():
             for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
+                yield chunk
 
         streaming_response = StreamingHttpResponse(
             stream_generator(),

@@ -57,7 +57,7 @@ class Plugin:
 
     def __init__(self):
         self.name = "Dispatcharr Timeshift"
-        self.version = "1.1.1"
+        self.version = "1.1.2"
         self.description = "Timeshift/catch-up TV support for Xtream Codes providers"
         self.url = "https://github.com/cedric-marcoux/dispatcharr_timeshift"
         self.author = "Cedric Marcoux"
@@ -130,9 +130,9 @@ class Plugin:
             return {"status": "error", "message": "Failed to install hooks"}
 
         elif action == "disable":
-            logger.info("[Timeshift] Disabling plugin...")
-            from .hooks import uninstall_hooks
-            uninstall_hooks()
+            # [DISABLED v1.1.2] Dispatcharr ne call jamais run("disable")
+            # Il toggle juste le flag 'enabled' en DB. Hooks check enabled state at runtime.
+            logger.info("[Timeshift] Plugin disabled (hooks remain installed, check enabled at runtime)")
             return {"status": "ok", "message": "Timeshift plugin disabled"}
 
         return {"status": "error", "message": f"Unknown action: {action}"}

@@ -126,17 +126,19 @@ def install_hooks():
         return False
 
 
-def uninstall_hooks():
-    """
-    Restore all original functions.
-    """
-    logger.info("[Timeshift] Uninstalling hooks...")
-    _restore_xc_get_live_streams()
-    _restore_stream_xc()
-    _restore_xc_get_epg()
-    _restore_generate_epg()
-    _restore_url_resolver()
-    logger.info("[Timeshift] All hooks uninstalled")
+# [DISABLED v1.1.2] Raison: Dispatcharr ne call jamais plugin.run("disable")
+# Pour réactiver: décommenter ce bloc et les 5 fonctions _restore_*() ci-dessous
+# def uninstall_hooks():
+#     """
+#     Restore all original functions.
+#     """
+#     logger.info("[Timeshift] Uninstalling hooks...")
+#     _restore_xc_get_live_streams()
+#     _restore_stream_xc()
+#     _restore_xc_get_epg()
+#     _restore_generate_epg()
+#     _restore_url_resolver()
+#     logger.info("[Timeshift] All hooks uninstalled")
 
 
 def _patch_xc_get_live_streams():
@@ -211,15 +213,16 @@ def _patch_xc_get_live_streams():
     logger.info("[Timeshift] Patched xc_get_live_streams")
 
 
-def _restore_xc_get_live_streams():
-    """Restore original xc_get_live_streams function."""
-    global _original_xc_get_live_streams
-
-    if _original_xc_get_live_streams:
-        from apps.output import views as output_views
-        output_views.xc_get_live_streams = _original_xc_get_live_streams
-        _original_xc_get_live_streams = None
-        logger.info("[Timeshift] Restored xc_get_live_streams")
+# [DISABLED v1.1.2] Voir uninstall_hooks() ci-dessus
+# def _restore_xc_get_live_streams():
+#     """Restore original xc_get_live_streams function."""
+#     global _original_xc_get_live_streams
+#
+#     if _original_xc_get_live_streams:
+#         from apps.output import views as output_views
+#         output_views.xc_get_live_streams = _original_xc_get_live_streams
+#         _original_xc_get_live_streams = None
+#         logger.info("[Timeshift] Restored xc_get_live_streams")
 
 
 def _patch_stream_xc():
@@ -312,39 +315,40 @@ def _patch_stream_xc():
                 pass
 
         if not channel:
-            # Gather diagnostic info to help users troubleshoot
-            diagnostics = []
+            # Basic warning (always logged)
+            logger.warning(f"[Timeshift] Live: Channel not found for ID={channel_id_str}. User: {username}")
 
-            # Check if stream exists with this ID but wrong account type
-            stream_any_type = Stream.objects.filter(
-                custom_properties__stream_id=channel_id_str
-            ).first()
-            if stream_any_type:
-                diagnostics.append(
-                    f"Stream found but account_type='{stream_any_type.m3u_account.account_type}' (need 'XC')"
-                )
-                if not stream_any_type.channels.exists():
-                    diagnostics.append("Stream has no channels assigned")
+            # Detailed diagnostics only in DEBUG mode (expensive DB queries)
+            if logger.isEnabledFor(logging.DEBUG):
+                diagnostics = []
 
-            # Check total XC streams count (is anything synced?)
-            xc_stream_count = Stream.objects.filter(m3u_account__account_type='XC').count()
-            diagnostics.append(f"Total XC streams in DB: {xc_stream_count}")
-
-            # Check if internal ID exists but user lacks access
-            if channel_id_str.isdigit():
-                ch = Channel.objects.filter(id=int(channel_id_str)).first()
-                if ch:
+                # Check if stream exists with this ID but wrong account type
+                stream_any_type = Stream.objects.filter(
+                    custom_properties__stream_id=channel_id_str
+                ).first()
+                if stream_any_type:
                     diagnostics.append(
-                        f"Channel exists (id={ch.id}, name='{ch.name}') "
-                        f"but user_level mismatch (user={user.user_level}, required={ch.user_level})"
+                        f"Stream found but account_type='{stream_any_type.m3u_account.account_type}' (need 'XC')"
                     )
+                    if not stream_any_type.channels.exists():
+                        diagnostics.append("Stream has no channels assigned")
 
-            # Log with diagnostics
-            logger.warning(
-                f"[Timeshift] Live: Channel not found for ID={channel_id_str}. "
-                f"User: {username}. "
-                f"Diagnostics: {'; '.join(diagnostics) if diagnostics else 'No matching records'}"
-            )
+                # Check total XC streams count (is anything synced?)
+                xc_stream_count = Stream.objects.filter(m3u_account__account_type='XC').count()
+                diagnostics.append(f"Total XC streams in DB: {xc_stream_count}")
+
+                # Check if internal ID exists but user lacks access
+                if channel_id_str.isdigit():
+                    ch = Channel.objects.filter(id=int(channel_id_str)).first()
+                    if ch:
+                        diagnostics.append(
+                            f"Channel exists (id={ch.id}, name='{ch.name}') "
+                            f"but user_level mismatch (user={user.user_level}, required={ch.user_level})"
+                        )
+
+                if diagnostics:
+                    logger.debug(f"[Timeshift] Diagnostics: {'; '.join(diagnostics)}")
+
             return JsonResponse({"error": "Not found"}, status=404)
 
         # Check user access level
@@ -372,26 +376,27 @@ def _patch_stream_xc():
     logger.info("[Timeshift] Patched stream_xc for provider stream_id lookup")
 
 
-def _restore_stream_xc():
-    """Restore original stream_xc function and URL pattern callbacks."""
-    global _original_stream_xc, _original_url_callbacks
-
-    if _original_stream_xc:
-        from apps.proxy.ts_proxy import views as proxy_views
-        from dispatcharr import urls as main_urls
-
-        # Restore module function
-        proxy_views.stream_xc = _original_stream_xc
-
-        # Restore URL pattern callbacks
-        for pattern in main_urls.urlpatterns:
-            if id(pattern) in _original_url_callbacks:
-                pattern.callback = _original_url_callbacks[id(pattern)]
-                logger.info(f"[Timeshift] Restored URL pattern: {pattern.name}")
-
-        _original_url_callbacks = {}
-        _original_stream_xc = None
-        logger.info("[Timeshift] Restored stream_xc")
+# [DISABLED v1.1.2] Voir uninstall_hooks() ci-dessus
+# def _restore_stream_xc():
+#     """Restore original stream_xc function and URL pattern callbacks."""
+#     global _original_stream_xc, _original_url_callbacks
+#
+#     if _original_stream_xc:
+#         from apps.proxy.ts_proxy import views as proxy_views
+#         from dispatcharr import urls as main_urls
+#
+#         # Restore module function
+#         proxy_views.stream_xc = _original_stream_xc
+#
+#         # Restore URL pattern callbacks
+#         for pattern in main_urls.urlpatterns:
+#             if id(pattern) in _original_url_callbacks:
+#                 pattern.callback = _original_url_callbacks[id(pattern)]
+#                 logger.info(f"[Timeshift] Restored URL pattern: {pattern.name}")
+#
+#         _original_url_callbacks = {}
+#         _original_stream_xc = None
+#         logger.info("[Timeshift] Restored stream_xc")
 
 
 def _patch_xc_get_epg():
@@ -572,15 +577,16 @@ def _patch_xc_get_epg():
     logger.info("[Timeshift] Patched xc_get_epg for provider stream_id lookup")
 
 
-def _restore_xc_get_epg():
-    """Restore original xc_get_epg function."""
-    global _original_xc_get_epg
-
-    if _original_xc_get_epg:
-        from apps.output import views as output_views
-        output_views.xc_get_epg = _original_xc_get_epg
-        _original_xc_get_epg = None
-        logger.info("[Timeshift] Restored xc_get_epg")
+# [DISABLED v1.1.2] Voir uninstall_hooks() ci-dessus
+# def _restore_xc_get_epg():
+#     """Restore original xc_get_epg function."""
+#     global _original_xc_get_epg
+#
+#     if _original_xc_get_epg:
+#         from apps.output import views as output_views
+#         output_views.xc_get_epg = _original_xc_get_epg
+#         _original_xc_get_epg = None
+#         logger.info("[Timeshift] Restored xc_get_epg")
 
 
 def _patch_generate_epg():
@@ -668,15 +674,16 @@ def _patch_generate_epg():
     logger.info("[Timeshift] Patched generate_epg for XMLTV timezone conversion")
 
 
-def _restore_generate_epg():
-    """Restore original generate_epg function."""
-    global _original_generate_epg
-
-    if _original_generate_epg:
-        from apps.output import views as output_views
-        output_views.generate_epg = _original_generate_epg
-        _original_generate_epg = None
-        logger.info("[Timeshift] Restored generate_epg")
+# [DISABLED v1.1.2] Voir uninstall_hooks() ci-dessus
+# def _restore_generate_epg():
+#     """Restore original generate_epg function."""
+#     global _original_generate_epg
+#
+#     if _original_generate_epg:
+#         from apps.output import views as output_views
+#         output_views.generate_epg = _original_generate_epg
+#         _original_generate_epg = None
+#         logger.info("[Timeshift] Restored generate_epg")
 
 
 def _patch_url_resolver():
@@ -735,12 +742,13 @@ def _patch_url_resolver():
     logger.info("[Timeshift] Patched URLResolver.resolve")
 
 
-def _restore_url_resolver():
-    """Restore original URLResolver.resolve function."""
-    global _original_resolve
-
-    if _original_resolve is not None:
-        from django.urls.resolvers import URLResolver
-        URLResolver.resolve = _original_resolve
-        _original_resolve = None
-        logger.info("[Timeshift] Restored URLResolver.resolve")
+# [DISABLED v1.1.2] Voir uninstall_hooks() ci-dessus
+# def _restore_url_resolver():
+#     """Restore original URLResolver.resolve function."""
+#     global _original_resolve
+#
+#     if _original_resolve is not None:
+#         from django.urls.resolvers import URLResolver
+#         URLResolver.resolve = _original_resolve
+#         _original_resolve = None
+#         logger.info("[Timeshift] Restored URLResolver.resolve")
