@@ -335,6 +335,35 @@ Example scenarios:
 
 **Recommendation**: For channels where you want timeshift, ensure the XC stream with `tv_archive=1` is set as the **first priority** stream.
 
+### Does catchup/timeshift work with Emby Live TV or other M3U-based players?
+
+**No, catchup does not work when using Dispatcharr's M3U output.**
+
+Dispatcharr generates a "clean" M3U without catchup attributes:
+```
+#EXTINF:-1 tvg-id="10" tvg-name="|BE| LA UNE FHD" ...
+http://dispatcharr:9191/proxy/ts/stream/uuid
+```
+
+For M3U-based catchup to work, the following attributes would be required:
+```
+catchup="default"
+catchup-source="http://server/timeshift/user/pass/{stream_id}/{start}/{duration}.ts"
+catchup-days="7"
+```
+
+**The Timeshift plugin only works with:**
+- Xtream Codes API (`player_api.php`) - adds `tv_archive=1` to responses
+- Direct `/timeshift/...` URL interception
+- IPTV clients that use the XC API (iPlayTV, TiviMate in XC mode, Snappier, etc.)
+
+**For M3U-based players like Emby Live TV, your options are:**
+1. Use your provider's original M3U directly (bypass Dispatcharr for catchup)
+2. Connect via Xtream Codes API instead of M3U if the player supports it
+3. Request Dispatcharr to add catchup support in M3U export (feature request on their GitHub)
+
+The Timeshift plugin patches the XC API layer, but Dispatcharr's M3U generator is a separate core component that doesn't include catchup metadata.
+
 ### My programs show 2 hours off in Snappier/IPTVX
 
 Ensure the "Provider Timezone" setting matches your provider's timezone. Most European providers use "Europe/Brussels" or similar. If programs appear 2 hours early or late, adjust the timezone setting accordingly.
