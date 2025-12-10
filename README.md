@@ -2,7 +2,7 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.1.2
+**Version**: 1.1.3
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
 
@@ -40,6 +40,13 @@ If timeshift features don't appear after installation, your **provider may not s
 ---
 
 ## Changelog
+
+### v1.1.3
+- **Bug fix**: Timezone setting was not being read from database
+  - Plugin was using wrong attribute `config.config` instead of `config.settings`
+  - Timezone always defaulted to "Europe/Brussels" regardless of user setting
+  - Now correctly reads from Dispatcharr's PluginConfig.settings field
+  - Affects both timeshift URL conversion and EPG timestamp conversion
 
 ### v1.1.2
 - **Code cleanup**: Removed dead code (`uninstall_hooks()` and `_restore_*()` functions)

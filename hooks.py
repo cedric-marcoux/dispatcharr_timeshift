@@ -76,10 +76,10 @@ def _get_plugin_config():
     try:
         from apps.plugins.models import PluginConfig
         config = PluginConfig.objects.filter(key='dispatcharr_timeshift').first()
-        if config and config.config:
+        if config and config.settings:
             return {
-                'timezone': config.config.get('timezone', 'Europe/Brussels'),
-                'language': config.config.get('language', 'en')
+                'timezone': config.settings.get('timezone', 'Europe/Brussels'),
+                'language': config.settings.get('language', 'en')
             }
     except Exception:
         pass

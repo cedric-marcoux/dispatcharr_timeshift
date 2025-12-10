@@ -375,8 +375,8 @@ def _get_plugin_timezone():
     try:
         from apps.plugins.models import PluginConfig
         config = PluginConfig.objects.filter(key='dispatcharr_timeshift').first()
-        if config and config.config:
-            return config.config.get('timezone', 'Europe/Brussels')
+        if config and config.settings:
+            return config.settings.get('timezone', 'Europe/Brussels')
     except Exception as e:
         logger.debug(f"[Timeshift] Could not load timezone setting: {e}")
     return "Europe/Brussels"

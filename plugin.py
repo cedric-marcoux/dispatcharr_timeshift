@@ -57,7 +57,7 @@ class Plugin:
 
     def __init__(self):
         self.name = "Dispatcharr Timeshift"
-        self.version = "1.1.2"
+        self.version = "1.1.3"
         self.description = "Timeshift/catch-up TV support for Xtream Codes providers"
         self.url = "https://github.com/cedric-marcoux/dispatcharr_timeshift"
         self.author = "Cedric Marcoux"
