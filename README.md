@@ -2,32 +2,46 @@
 
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
-**Version**: 1.1.7
+**Version**: 1.1.8
 **GitHub**: https://github.com/cedric-marcoux/dispatcharr_timeshift
 **License**: MIT
 
 ---
 
-## ⚠️ IMPORTANT: Installation from GitHub
+## ⚠️ IMPORTANT: Installation Methods
 
-When downloading this plugin from GitHub (via "Download ZIP"), the file will be named `dispatcharr_timeshift-main.zip` (GitHub adds `-main` suffix for the main branch).
+### Method 1: Git Clone (Recommended)
 
-### Recommended Method: WebUI Import
-
-1. **Rename the ZIP file** from `dispatcharr_timeshift-main.zip` to `dispatcharr_timeshift.zip`
-2. Go to Dispatcharr **Settings → Plugins**
-3. Click **Import** and select your renamed ZIP file
-4. **Enable** the plugin after import
-
-The WebUI import handles file permissions automatically.
-
-### Manual Method (Advanced)
-
-If you extract files directly to the plugins directory, you **MUST** manage file permissions yourself:
+The **easiest and most reliable** way to install:
 
 ```bash
 cd /path/to/dispatcharr/data/plugins/
+git clone https://github.com/cedric-marcoux/dispatcharr_timeshift.git
+docker compose restart dispatcharr
+```
+
+Then enable the plugin in Dispatcharr **Settings → Plugins**.
+
+### Method 2: Download Release Asset
+
+Download `dispatcharr_timeshift.zip` from the [Releases page](https://github.com/cedric-marcoux/dispatcharr_timeshift/releases), then import via **Settings → Plugins → Import**.
+
+### Method 3: Manual ZIP (Advanced)
+
+⚠️ **WARNING**: GitHub's default "Download ZIP" includes the branch/tag name in the folder (e.g., `dispatcharr_timeshift-1.1.8/` or `dispatcharr_timeshift-main/`), which **breaks Python imports**. You must rename the folder:
+
+```bash
+cd /path/to/dispatcharr/data/plugins/
+
+# If downloaded from a release tag (v1.1.8):
+unzip dispatcharr_timeshift-1.1.8.zip
+mv dispatcharr_timeshift-1.1.8 dispatcharr_timeshift
+
+# If downloaded from main branch:
+unzip dispatcharr_timeshift-main.zip
 mv dispatcharr_timeshift-main dispatcharr_timeshift
+
+# Fix permissions
 chmod 644 dispatcharr_timeshift/*.py
 chown 1000:1000 dispatcharr_timeshift/*
 docker compose restart dispatcharr
@@ -40,6 +54,13 @@ If timeshift features don't appear after installation, your **provider may not s
 ---
 
 ## Changelog
+
+### v1.1.8
+- **Documentation**: Improved installation instructions
+  - Method 1: Git clone (recommended) - most reliable method
+  - Method 2: Download release asset `dispatcharr_timeshift.zip` (correct folder name)
+  - Method 3: Manual ZIP with folder rename warning
+  - Explained why GitHub's default ZIP breaks Python imports (folder name includes version/branch)
 
 ### v1.1.7
 - **Bug fix**: Export Plugin class in `__init__.py`
