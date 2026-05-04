@@ -55,6 +55,18 @@ If timeshift features don't appear after installation, your **provider may not s
 
 ## Changelog
 
+### v1.3.0
+- **Major refactor for Dispatcharr v0.24 compatibility + idempotency**
+- **[NEW] uWSGI worker warm-up** (Dispatcharr v0.24+): hooks were not being installed in uWSGI workers
+  - Root cause: Dispatcharr v0.24 (commit ddb0328) introduced `should_skip_initialization()` which skips plugin discovery in worker processes (parent.name in `['uwsgi', 'gunicorn']`). With `lazy-apps=true`, each uWSGI worker initializes independently and never imports `plugin.py` → monkey-patches never applied → `tv_archive=0` returned
+  - **Fix**: new `_warmup_workers()` helper. When the plugin gets imported in any worker (triggered by a Connect event firing — e.g. a client playing any channel), the helper fires 20 sequential HTTP loopback requests to `/live/...ts`. Each request hits a different uWSGI worker (round-robin), which fires `channel_start`, which causes that worker to import the plugin and install hooks. A Redis NX lock prevents multiple workers from running warmup simultaneously
+  - **Defense in depth**: new `_keepalive` action subscribed to `channel_start`, `channel_stop`, `client_connect`, `client_disconnect`, `epg_refresh` events. Any worker that handles a Connect event (even not a stream play) loads the plugin
+  - **New setting `warmup_on_enable`** (default: true): disable to skip the auto-warmup HTTP loopback (~12 KB total bandwidth) and rely solely on natural event firing
+  - **Cold-start behavior**: immediately after Dispatcharr restart, no uWSGI worker has the plugin loaded (Dispatcharr v0.24 design). The first client action — playing any channel — triggers `channel_start` in one worker, which discovers the plugin, installs hooks, and runs warmup to propagate to remaining workers. Within ~2 seconds all workers are patched
+  - Plugin remains 100% independent — no Dispatcharr core modifications required
+- **[FIX] Issue #14 — RecursionError on plugin re-discover**: the `URLResolver.resolve` patch was not idempotent. Calling `_patch_url_resolver()` twice (e.g. via `pm.discover_plugins(force_reload=True)` from another plugin's development cycle) captured the already-patched function as "original", recursing one level per re-discover until Python's recursion limit blew up every API request. Fixed using the same `_is_timeshift_patch` + `_native_func` marker pattern already used by the other four patches in this module
+- **[FIX] Issue #8 — Fallback chain not working in `timeshift_proxy`**: when a channel's first stream lacks `tv_archive=1` but a later stream has it, the plugin returned "Timeshift not supported for this channel" instead of using the catch-up-enabled fallback stream. The fallback chain logic was originally added in v1.1.9 (community contribution) but was accidentally reverted in v1.2.0 during a refactor. Restored in v1.3.0
+
 ### v1.1.9
 - **New feature: Catch-up Fallback Chain** - Channels with multiple streams now support catch-up even when top-priority stream lacks it
   - Previously: If top-priority stream (e.g., UHD) had no catch-up, entire channel was marked as unavailable

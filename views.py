@@ -169,18 +169,41 @@ def timeshift_proxy(request, username, password, stream_id, timestamp, duration)
         logger.error(f"[Timeshift] Access denied: user {username} (level {user.user_level}) < channel {channel.name} (level {channel.user_level})")
         return HttpResponseForbidden("Access denied")
 
-    # Step 4: Verify channel supports timeshift
+    # Step 4: Check if stream supports catch-up, or find fallback in channel.
+    # The user-facing stream may not have tv_archive=1, but ANOTHER stream on
+    # the same channel might. Issue #8: prior to v1.1.9 this was strict, then
+    # v1.1.9 added the fallback chain, then v1.2.0 accidentally reverted it.
+    # Restored in v1.3.0.
+    catchup_stream = stream
     props = stream.custom_properties or {}
+
     if props.get('tv_archive') not in (1, '1'):
-        logger.error(f"[Timeshift] Channel {channel.name} does not support timeshift (tv_archive={props.get('tv_archive')})")
-        return HttpResponseBadRequest("Timeshift not supported for this channel")
+        if debug:
+            logger.info(f"[Timeshift] {stream.name} has no catch-up, searching fallback in {channel.name}...")
+
+        catchup_stream = None
+
+        for alt_stream in channel.streams.order_by('channelstream__order'):
+            alt_props = alt_stream.custom_properties or {}
+            if alt_props.get('tv_archive') in (1, '1'):
+                catchup_stream = alt_stream
+                props = alt_props
+                if debug:
+                    logger.info(f"[Timeshift] Catch-up fallback found: {alt_stream.name} (provider: {alt_stream.m3u_account.name})")
+                break
+
+        if not catchup_stream:
+            logger.error(f"[Timeshift] No catch-up stream available in channel {channel.name}")
+            return HttpResponseBadRequest("Timeshift not supported for this channel")
 
     if debug:
+        logger.info(f"[Timeshift] Using stream: {catchup_stream.name}")
         logger.info(f"[Timeshift] Stream props: {props}")
 
     # Step 5: Verify it's an Xtream Codes provider
-    m3u_account = stream.m3u_account
+    m3u_account = catchup_stream.m3u_account
     if not m3u_account or m3u_account.account_type != 'XC':
+        logger.error(f"[Timeshift] Selected stream {catchup_stream.name} is not from XC provider")
         return HttpResponseBadRequest("Channel not from Xtream Codes provider")
 
     # Step 6: Convert timestamp from UTC to provider's local timezone

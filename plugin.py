@@ -26,6 +26,116 @@ logger = logging.getLogger("plugins.dispatcharr_timeshift")
 # Track if hooks are installed in THIS worker (each uWSGI worker is separate)
 _hooks_installed = False
 
+# Prevent recursive worker warmup: each warmup triggers channel_start events
+# which load this module in other workers, which would otherwise re-trigger
+# warmup, creating an explosion of HTTP loopback requests.
+_warmup_attempted = False
+
+
+def _warmup_workers():
+    """
+    Force plugin loading in all uWSGI workers via HTTP loopback.
+
+    Dispatcharr v0.24 (commit ddb0328) introduced should_skip_initialization()
+    which skips plugin discovery in worker processes (lazy-apps=true). Our
+    monkey-patches only get installed when discover_plugins() runs in a worker.
+    Connect events trigger discover_plugins via apps.connect.utils.trigger_event().
+    We use loopback HTTP to round-robin all workers and fire channel_start.
+
+    Each request opens connection then closes immediately — the provider
+    stream is interrupted before any meaningful bandwidth use.
+
+    Cross-process coordination:
+        - Per-process flag _warmup_attempted prevents recursive warmup within
+          the same worker (loopback fires channel_start which would otherwise
+          re-load module and re-trigger warmup).
+        - Redis NX lock with 60s TTL ensures only ONE worker actually performs
+          warmup across the cluster. Others see the lock and skip immediately.
+          Without this, 4 workers × 8 requests = 32 simultaneous loopback
+          requests overload uWSGI and ALL workers eventually re-trigger warmup
+          when their loopback requests hit.
+    """
+    global _warmup_attempted
+
+    if _warmup_attempted:
+        return
+    _warmup_attempted = True
+
+    import urllib.request
+    import urllib.error
+    import socket
+    import threading
+    import time
+
+    try:
+        from .hooks import _get_plugin_config
+        config = _get_plugin_config()
+        if not config.get('warmup_on_enable', True):
+            logger.info("[Timeshift] Worker warmup disabled by setting (warmup_on_enable=False)")
+            return
+
+        # Cluster-wide exclusion: only one worker actually performs warmup.
+        # Use Dispatcharr's existing RedisClient (already connected in core.utils).
+        # Short TTL (15s) so a recycled worker can re-warmup after a previous run
+        # if the first attempt missed some workers.
+        try:
+            from core.utils import RedisClient
+            redis = RedisClient.get_client()
+            lock_key = "dispatcharr_timeshift:warmup_lock"
+            acquired = redis.set(lock_key, "1", nx=True, ex=15)
+            if not acquired:
+                logger.debug("[Timeshift] Warmup already running in another process, skipping")
+                return
+        except Exception as e:
+            logger.debug(f"[Timeshift] Redis lock unavailable, proceeding without cluster lock: {e}")
+
+        # Brief delay to let install_hooks() finish in caller and Django settle.
+        time.sleep(0.5)
+
+        # Find a user with xc_password and a channel with active streams.
+        from apps.accounts.models import User
+        from apps.channels.models import Channel
+
+        user = None
+        for u in User.objects.all():
+            if (u.custom_properties or {}).get('xc_password'):
+                user = u
+                break
+        if not user:
+            logger.warning("[Timeshift] Worker warmup skipped: no user with xc_password configured")
+            return
+
+        xc_password = user.custom_properties['xc_password']
+        channel = Channel.objects.filter(streams__isnull=False).first()
+        if not channel:
+            logger.warning("[Timeshift] Worker warmup skipped: no channel with streams")
+            return
+
+        url = f"http://localhost:5656/live/{user.username}/{xc_password}/{channel.id}.ts"
+        logger.info(f"[Timeshift] Warming up uWSGI workers via {url}")
+
+        def _ping_worker(idx):
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    resp.read(1024)  # Minimal read to ensure channel_start fires
+            except (socket.timeout, urllib.error.URLError):
+                pass  # Expected — we close the connection fast
+            except Exception as e:
+                logger.debug(f"[Timeshift] Warmup ping {idx} error: {e}")
+
+        # Send 20 sequential requests with 100ms gap. Sequential avoids
+        # overloading uWSGI; 20 requests give >99.7% probability that all 4
+        # workers are hit (P(miss any worker) ≤ 4 × (3/4)^20 ≈ 1.3%).
+        for i in range(20):
+            _ping_worker(i)
+            time.sleep(0.1)
+
+        logger.info("[Timeshift] Worker warmup complete — hooks should now be active in all workers")
+
+    except Exception as e:
+        logger.warning(f"[Timeshift] Worker warmup failed (non-fatal): {e}")
+
 
 def _auto_install_hooks():
     """
@@ -33,6 +143,10 @@ def _auto_install_hooks():
 
     Hooks are ALWAYS installed, but they check _is_plugin_enabled() at runtime.
     This allows enabling/disabling the plugin without restart.
+
+    Triggers a background warmup of other uWSGI workers (Dispatcharr v0.24+
+    skips plugin discovery in workers, so they need to be woken up via Connect
+    events fired by HTTP loopback).
     """
     global _hooks_installed
 
@@ -44,6 +158,11 @@ def _auto_install_hooks():
         if install_hooks():
             _hooks_installed = True
             logger.info("[Timeshift] Hooks installed (will check enabled state at runtime)")
+
+            # Warm up other uWSGI workers in background (non-blocking).
+            # See _warmup_workers() docstring for the v0.24 issue this works around.
+            import threading
+            threading.Thread(target=_warmup_workers, daemon=True).start()
 
     except Exception as e:
         logger.error(f"[Timeshift] Auto-install error: {e}")
@@ -265,6 +384,18 @@ class Plugin:
                 "help_text": "Enable ultra-verbose logging for troubleshooting (check Dispatcharr logs)"
             },
             {
+                "id": "warmup_on_enable",
+                "type": "boolean",
+                "label": "Auto warm-up workers (Dispatcharr v0.24+)",
+                "default": True,
+                "help_text": (
+                    "On Dispatcharr v0.24+, plugins are not loaded in uWSGI workers by default. "
+                    "Enable to automatically warm up all workers via HTTP loopback when the plugin "
+                    "is enabled. Disable to save brief provider bandwidth (cold-start delay until "
+                    "first channel is played by any client)."
+                )
+            },
+            {
                 "id": "url_format",
                 "type": "select",
                 "label": "Catchup URL Format",
@@ -293,8 +424,28 @@ class Plugin:
             }
         ]
 
-        # No custom actions needed
-        self.actions = []
+        # _keepalive: defense-in-depth action subscribed to frequent Connect events.
+        # When any of these events fires, Dispatcharr calls pm.discover_plugins() in
+        # the worker handling the event, which imports this plugin module and triggers
+        # _auto_install_hooks(). This guarantees workers stay patched even if HTTP
+        # warmup missed them (e.g. uWSGI worker recycled after timeout).
+        self.actions = [
+            {
+                "id": "_keepalive",
+                "label": "Keep hooks active (internal)",
+                "description": (
+                    "Internal no-op action subscribed to Connect events. "
+                    "Ensures plugin module is loaded in every uWSGI worker on Dispatcharr v0.24+."
+                ),
+                "events": [
+                    "channel_start",
+                    "channel_stop",
+                    "client_connect",
+                    "client_disconnect",
+                    "epg_refresh",
+                ],
+            }
+        ]
 
     @property
     def fields(self):
@@ -351,15 +502,26 @@ class Plugin:
         Called by PluginManager when:
         - action="enable": Plugin is being enabled
         - action="disable": Plugin is being disabled
+        - action="_keepalive": Internal no-op fired by Connect events (Dispatcharr v0.24+)
         """
         global _hooks_installed
         context = context or {}
+
+        if action == "_keepalive":
+            # No-op: being called means the plugin module was imported in this
+            # worker (via pm.discover_plugins triggered by trigger_event). The
+            # module-level _auto_install_hooks() already ran at import time.
+            return {"status": "ok"}
 
         if action == "enable":
             logger.info("[Timeshift] Enabling plugin...")
             from .hooks import install_hooks
             if install_hooks():
                 _hooks_installed = True
+                # Warm up other uWSGI workers (Dispatcharr v0.24+ doesn't load
+                # plugins in workers by default).
+                import threading
+                threading.Thread(target=_warmup_workers, daemon=True).start()
                 return {"status": "ok", "message": "Timeshift plugin enabled"}
             return {"status": "error", "message": "Failed to install hooks"}
 

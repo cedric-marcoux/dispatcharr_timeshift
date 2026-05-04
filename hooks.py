@@ -84,7 +84,8 @@ def _get_plugin_config():
         'language': 'en',
         'debug_mode': False,
         'url_format': 'auto',
-        'custom_url_template': ''
+        'custom_url_template': '',
+        'warmup_on_enable': True,
     }
     try:
         from apps.plugins.models import PluginConfig
@@ -95,7 +96,8 @@ def _get_plugin_config():
                 'language': config.settings.get('language', 'en').strip(),
                 'debug_mode': bool(config.settings.get('debug_mode', False)),
                 'url_format': config.settings.get('url_format', 'auto').strip(),
-                'custom_url_template': config.settings.get('custom_url_template', '').strip()
+                'custom_url_template': config.settings.get('custom_url_template', '').strip(),
+                'warmup_on_enable': bool(config.settings.get('warmup_on_enable', True)),
             }
     except Exception:
         pass
@@ -529,6 +531,49 @@ def _patch_xc_get_epg():
 
     from apps.output import views as output_views
 
+    def _convert_epg_timestamps_to_local(result, config, debug=False):
+        """
+        Convert UTC timestamps in XC API EPG response to local timezone.
+
+        WHY: TiviMate displays the 'start' and 'end' string fields verbatim
+        without applying timezone conversion. Since Dispatcharr v0.21+ stores
+        real UTC in DB (not CET-as-UTC like v0.20.x), we must convert here.
+
+        NOTE: Do NOT also patch xc_get_info timezone - that causes double
+        conversion (learned in v1.2.1). Keep server_info.timezone as UTC.
+        """
+        if not isinstance(result, dict) or 'epg_listings' not in result:
+            return result
+
+        from datetime import datetime, timezone as dt_timezone
+        from zoneinfo import ZoneInfo
+
+        timezone_str = config['timezone']
+        local_tz = ZoneInfo(timezone_str)
+        # Use datetime.timezone.utc instead of ZoneInfo("UTC") because
+        # ZoneInfo("UTC") can return wrong offset when /etc/timezone differs
+        # from /etc/localtime in Docker containers (v1.2.4 fix).
+        utc_tz = dt_timezone.utc
+        converted = 0
+
+        for listing in result['epg_listings']:
+            for field in ('start', 'end'):
+                val = listing.get(field)
+                if not val:
+                    continue
+                try:
+                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                    dt = dt.replace(tzinfo=utc_tz)
+                    listing[field] = dt.astimezone(local_tz).strftime("%Y-%m-%d %H:%M:%S")
+                    converted += 1
+                except (ValueError, TypeError):
+                    pass
+
+        if debug and converted:
+            logger.info(f"[Timeshift] EPG: Converted {converted} timestamps to {timezone_str}")
+
+        return result
+
     if getattr(output_views.xc_get_epg, '_is_timeshift_patch', False):
         if _original_xc_get_epg is None:
             _original_xc_get_epg = output_views.xc_get_epg._native_func
@@ -702,9 +747,12 @@ def _patch_xc_get_epg():
 
                 return output
             else:
-                # No timeshift or short=True - delegate to original
-                # Matches v0.17 behavior: only tv_archive path converts timestamps.
-                # Short EPG and non-archive channels use native UTC output.
+                # No timeshift or short=True - delegate to original,
+                # then convert UTC timestamps to local timezone.
+                # WHY: Dispatcharr v0.21+ stores real UTC in DB. TiviMate
+                # displays start/end strings verbatim → shows -1h without
+                # conversion. DO NOT patch xc_get_info (double conversion
+                # bug from v1.2.1).
                 if debug:
                     logger.info(f"[Timeshift] EPG: Delegating to original (tv_archive={has_tv_archive}, short={short})")
 
@@ -717,7 +765,9 @@ def _patch_xc_get_epg():
                 request.GET = new_get
 
                 try:
-                    return _original_xc_get_epg(request, user, short)
+                    result = _original_xc_get_epg(request, user, short)
+                    result = _convert_epg_timestamps_to_local(result, config, debug)
+                    return result
                 finally:
                     request.GET = original_get
 
@@ -860,14 +910,25 @@ def _patch_url_resolver():
         QUIRK: iPlayTV sends parameters in unexpected positions:
         - Position 3 (stream_id param) = EPG channel number (NOT used)
         - Position 5 (duration param) = Provider's stream_id (USED for lookup)
+
+    IDEMPOTENCY (issue #14):
+        Without a function-marker guard, calling _patch_url_resolver() twice
+        captures the already-patched resolve as "original", causing infinite
+        recursion on subsequent re-discovers (force_reload=True). The other
+        4 patches use _is_timeshift_patch on the function; we use the same
+        pattern here.
     """
     global _original_resolve
 
     from django.urls.resolvers import URLResolver
 
-    # Already patched if _original_resolve is set
-    if _original_resolve is not None:
-        logger.info("[Timeshift] URLResolver already patched")
+    # Idempotent guard: detect if URLResolver.resolve is already our patch.
+    # The other guards in this module use the same _is_timeshift_patch marker.
+    current = URLResolver.resolve
+    if getattr(current, '_is_timeshift_patch', False):
+        if _original_resolve is None:
+            _original_resolve = current._native_func
+        logger.info("[Timeshift] URLResolver already patched, skipping")
         return
 
     from .views import timeshift_proxy
@@ -877,7 +938,7 @@ def _patch_url_resolver():
         r'(?P<stream_id>\d+)/(?P<timestamp>[\d\-:]+)/(?P<duration>\d+)\.ts$'
     )
 
-    _original_resolve = URLResolver.resolve
+    _original_resolve = current
 
     def patched_resolve(self, path):
         # Only intercept if plugin is enabled
@@ -896,5 +957,7 @@ def _patch_url_resolver():
                 )
         return _original_resolve(self, path)
 
+    patched_resolve._is_timeshift_patch = True
+    patched_resolve._native_func = _original_resolve
     URLResolver.resolve = patched_resolve
     logger.info("[Timeshift] Patched URLResolver.resolve")
