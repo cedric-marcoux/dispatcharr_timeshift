@@ -86,11 +86,16 @@ def _get_plugin_config():
         'url_format': 'auto',
         'custom_url_template': '',
         'warmup_on_enable': True,
+        'xmltv_prev_days_override': 0,
     }
     try:
         from apps.plugins.models import PluginConfig
         config = PluginConfig.objects.filter(key='dispatcharr_timeshift').first()
         if config and config.settings:
+            try:
+                xmltv_override = int(config.settings.get('xmltv_prev_days_override', 0))
+            except (TypeError, ValueError):
+                xmltv_override = 0
             return {
                 'timezone': config.settings.get('timezone', 'Europe/Brussels').strip(),
                 'language': config.settings.get('language', 'en').strip(),
@@ -98,6 +103,7 @@ def _get_plugin_config():
                 'url_format': config.settings.get('url_format', 'auto').strip(),
                 'custom_url_template': config.settings.get('custom_url_template', '').strip(),
                 'warmup_on_enable': bool(config.settings.get('warmup_on_enable', True)),
+                'xmltv_prev_days_override': max(0, min(xmltv_override, 30)),
             }
     except Exception:
         pass
@@ -120,6 +126,56 @@ def _is_plugin_enabled():
         return config.enabled
     except Exception:
         return False
+
+
+_provider_archive_days_cache = {'value': None, 'expires_at': 0}
+
+
+def _compute_provider_archive_days():
+    """
+    Compute max tv_archive_duration across XC streams with catch-up enabled.
+
+    Used to auto-set XMLTV `prev_days` so the EPG grid covers the full
+    catch-up window the provider supports. The value is stable across M3U
+    syncs, so we cache it for 5 minutes per process to avoid scanning streams
+    on every XMLTV download (xmltv.php is called on a schedule by clients).
+
+    Returns:
+        int: max provider tv_archive_duration in days, capped at 30.
+             0 if no XC stream advertises tv_archive=1 or on any error.
+    """
+    import time
+    now_ts = time.time()
+    cached = _provider_archive_days_cache
+    if cached['value'] is not None and cached['expires_at'] > now_ts:
+        return cached['value']
+
+    max_days = 0
+    try:
+        from apps.channels.models import Stream
+        # JSONField filtering: tv_archive may be int 1 or string "1"
+        streams = Stream.objects.filter(
+            m3u_account__account_type='XC'
+        ).only('custom_properties')
+        for stream in streams:
+            props = stream.custom_properties or {}
+            if props.get('tv_archive') not in (1, '1'):
+                continue
+            try:
+                d = int(props.get('tv_archive_duration', 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if d > max_days:
+                max_days = d
+    except Exception as e:
+        logger.warning(f"[Timeshift] Could not compute provider archive days: {e}")
+        max_days = 0
+
+    # Dispatcharr core caps prev_days at 30 (validated on input)
+    max_days = max(0, min(max_days, 30))
+    cached['value'] = max_days
+    cached['expires_at'] = now_ts + 300  # 5-minute TTL
+    return max_days
 
 
 def install_hooks():
@@ -821,13 +877,45 @@ def _patch_generate_epg():
             plugin_config = _get_plugin_config()
             timezone_str = plugin_config['timezone']
             debug = plugin_config['debug_mode']
+            xmltv_override = plugin_config['xmltv_prev_days_override']
             local_tz = ZoneInfo(timezone_str)
 
             if debug:
                 logger.info(f"[Timeshift] XMLTV: Converting timestamps to {timezone_str}")
 
-            # Call original function to get response
-            original_response = _original_generate_epg(request, profile_name, user)
+            # Inject prev_days so XMLTV includes past programmes for catch-up
+            # clients (TiviMate, IPTVnator). Dispatcharr core defaults prev_days
+            # to 0 → no past data → no has_archive icons after a client cache
+            # clear. Source of truth: provider's tv_archive_duration on each
+            # XC stream (filled at M3U sync). We take the max across streams
+            # with tv_archive=1 so every channel's catch-up window is covered.
+            # Plugin setting xmltv_prev_days_override (>0) bypasses the
+            # auto-detection. URL ?prev_days= and user.epg_prev_days keep
+            # precedence so admins can still override per-request/per-user.
+            user_prev = (user.custom_properties or {}).get('epg_prev_days') if user else None
+            url_has_prev = 'prev_days' in request.GET
+            inject_value = 0
+            if not url_has_prev and not user_prev:
+                if xmltv_override > 0:
+                    inject_value = xmltv_override
+                else:
+                    inject_value = _compute_provider_archive_days()
+            should_inject = inject_value > 0
+            original_get = request.GET
+            if should_inject:
+                new_get = original_get.copy()
+                new_get['prev_days'] = str(inject_value)
+                request.GET = new_get
+                if debug:
+                    src = 'override' if xmltv_override > 0 else 'provider'
+                    logger.info(f"[Timeshift] XMLTV: Injecting prev_days={inject_value} (source: {src})")
+
+            try:
+                # Call original function to get response
+                original_response = _original_generate_epg(request, profile_name, user)
+            finally:
+                if should_inject:
+                    request.GET = original_get
 
             # Pattern to match XMLTV timestamps: 20251128143000 +0000
             timestamp_pattern = re.compile(r'(\d{14}) ([+-]\d{4})')

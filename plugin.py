@@ -421,6 +421,19 @@ class Plugin:
                     "{duration} (minutes from EPG) {start_unix} (Unix epoch) "
                     "{epg_channel_id} {channel_name} {channel_id} {tv_archive_duration} (days) {extension} (ts/m3u8)"
                 )
+            },
+            {
+                "id": "xmltv_prev_days_override",
+                "type": "string",
+                "label": "XMLTV catch-up lookback override (days)",
+                "default": "0",
+                "help_text": (
+                    "Number of past days to include in /xmltv.php so catch-up clients (TiviMate, "
+                    "IPTVnator) show the rewind icon on past programmes. "
+                    "0 = auto-detect from provider's tv_archive_duration (recommended). "
+                    "Set a positive integer (1-30) to force a fixed value. "
+                    "URL ?prev_days= and user.epg_prev_days always take precedence."
+                )
             }
         ]
 

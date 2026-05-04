@@ -55,6 +55,13 @@ If timeshift features don't appear after installation, your **provider may not s
 
 ## Changelog
 
+### v1.3.1
+- **[FIX] Catch-up icons missing in TiviMate / IPTVnator after EPG cache clear** — the XMLTV stream served at `/xmltv.php` did not include past programmes, so clients had nothing to attach `has_archive` icons to once their local cache was wiped
+  - Root cause: Dispatcharr core `generate_epg` honors a `prev_days` parameter (URL query or `user.custom_properties.epg_prev_days`) that controls how many days of past EPG to include. Default is 0. The plugin's `generate_epg` patch only converted timestamps to local timezone; it never injected `prev_days`. Catch-up clients consume the XMLTV grid for the rewind UI, so when their cache was cleared they saw zero past programmes and lost all catch-up icons
+  - **Fix**: the patch now auto-injects `prev_days` based on each provider's `tv_archive_duration` (max across all XC streams with `tv_archive=1`). The value is cached for 5 minutes per worker so XMLTV downloads stay fast. URL `?prev_days=` and per-user `epg_prev_days` keep precedence
+  - **New setting `xmltv_prev_days_override`** (default: 0 = auto from provider): set a positive integer (1-30) to force a fixed lookback regardless of provider metadata
+  - This bug pre-dated v1.3.0 but was masked by clients' persistent EPG cache; clearing TiviMate cache after upgrade exposed it
+
 ### v1.3.0
 - **Major refactor for Dispatcharr v0.24 compatibility + idempotency**
 - **[NEW] uWSGI worker warm-up** (Dispatcharr v0.24+): hooks were not being installed in uWSGI workers
