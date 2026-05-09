@@ -64,7 +64,9 @@ def _get_programme_duration(channel, timestamp_str):
 
     try:
         # Parse timestamp (already converted to provider's local timezone)
-        dt = datetime.strptime(timestamp_str, "%Y-%m-%d:%H-%M")
+        # Make timezone-aware so Django doesn't warn about naive datetimes
+        from datetime import timezone as dt_timezone
+        dt = datetime.strptime(timestamp_str, "%Y-%m-%d:%H-%M").replace(tzinfo=dt_timezone.utc)
 
         # Check if channel has EPG data
         if not channel.epg_data:
@@ -316,34 +318,80 @@ def _authenticate_user(username, password):
 
 def _find_channel_by_provider_stream_id(provider_stream_id):
     """
-    Find channel by the provider's stream_id stored in custom_properties.
+    Find channel by the provider's stream_id stored in custom_properties,
+    preferring a stream with tv_archive=1 for timeshift support.
 
     The provider_stream_id (e.g., 22371) comes from the XC provider's API
     and is stored in stream.custom_properties.stream_id during M3U sync.
     This is different from Dispatcharr's internal channel ID.
+
+    Strategy:
+      1. Find all XC streams whose custom_properties.stream_id matches.
+      2. Resolve a channel from those streams.
+      3. Scan ALL streams on that channel (ordered by priority) looking for
+         one with tv_archive=1.  Fall back to the originally-matched stream
+         if none is found.
 
     Returns:
         Tuple of (Channel, Stream) if found, (None, None) otherwise
     """
     from apps.channels.models import Stream
 
-    # Search for stream where custom_properties.stream_id matches
+    # Search for all streams where custom_properties.stream_id matches
     # Only look at XC provider streams
-    stream = Stream.objects.filter(
+    matched_streams = Stream.objects.filter(
         custom_properties__stream_id=str(provider_stream_id),
         m3u_account__account_type='XC'
-    ).first()
+    )
 
-    if stream:
-        channel = stream.channels.first()
-        if channel:
-            return channel, stream
-        else:
-            logger.error(f"[Timeshift] Stream found but no channel for provider_stream_id={provider_stream_id}")
-    else:
+    logger.info(f"[Timeshift] Lookup provider_stream_id={provider_stream_id}: "
+                f"found {matched_streams.count()} matching stream(s)")
+
+    for s in matched_streams:
+        props = s.custom_properties or {}
+        logger.info(f"[Timeshift]   Matched stream: id={s.id} name='{s.name}' "
+                    f"tv_archive={props.get('tv_archive')} account='{s.m3u_account}'")
+
+    # Use the last matched stream as the anchor to resolve the channel
+    anchor_stream = matched_streams.last()
+    if not anchor_stream:
         logger.error(f"[Timeshift] Channel not found: provider_stream_id={provider_stream_id}")
+        return None, None
 
-    return None, None
+    channel = anchor_stream.channels.last()
+    if not channel:
+        logger.error(f"[Timeshift] Stream found but no channel for provider_stream_id={provider_stream_id}")
+        return None, None
+
+    logger.info(f"[Timeshift] Resolved channel: id={channel.id} name='{channel.name}'")
+
+    # Scan all streams on this channel to find one with tv_archive=1
+    all_channel_streams = channel.streams.filter(
+        m3u_account__account_type='XC'
+    ).order_by('channelstream__order')
+
+    logger.info(f"[Timeshift] Scanning {all_channel_streams.count()} XC stream(s) on channel '{channel.name}' for tv_archive support:")
+
+    catchup_stream = None
+    for s in all_channel_streams:
+        props = s.custom_properties or {}
+        tv_archive = props.get('tv_archive')
+        logger.info(f"[Timeshift]   stream id={s.id} name='{s.name}' "
+                    f"stream_id={props.get('stream_id')} tv_archive={tv_archive}")
+        if tv_archive in (1, '1'):
+            catchup_stream = s
+            logger.info(f"[Timeshift]   ^ Selected as catchup stream (first with tv_archive=1)")
+            break
+
+    if catchup_stream:
+        logger.info(f"[Timeshift] Using catchup stream: id={catchup_stream.id} name='{catchup_stream.name}'")
+        return channel, catchup_stream
+
+    # No tv_archive=1 stream found — fall back to anchor so the caller
+    # can return a meaningful error rather than a silent 404
+    logger.warning(f"[Timeshift] No tv_archive=1 stream found on channel '{channel.name}', "
+                   f"falling back to anchor stream id={anchor_stream.id} name='{anchor_stream.name}'")
+    return channel, anchor_stream
 
 
 def _proxy_stream(request, url, user_agent, fallback_url=None, m3u_account_id=None, debug=False):
