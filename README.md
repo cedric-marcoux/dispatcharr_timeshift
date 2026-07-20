@@ -1,5 +1,8 @@
 # Dispatcharr Timeshift Plugin
 
+Plugin Depecrated, code has been implemented since version 0.28
+https://github.com/Dispatcharr/Dispatcharr/releases/tag/v0.28.0
+
 Timeshift/catch-up TV plugin for Dispatcharr. Watch past TV programs (up to 7 days) via Xtream Codes providers.
 
 **Version**: 1.1.9
